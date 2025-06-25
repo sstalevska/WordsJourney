@@ -1,28 +1,32 @@
 library(shiny)
 library(dplyr)
 library(stringr)
-library(shinycssloaders)  # for loading spinners
-library(visNetwork)        # for interactive network
-library(ggplot2)           # for plotting in last tab
-library(tidyr)             # for data manipulation
+library(shinycssloaders)
+library(visNetwork)
+library(igraph)
+library(ggplot2)
+library(tidyr)
+library(RColorBrewer)
 
-# Load processed data
+# Load processed data 
 dict <- readRDS("dict.rds")
 etymology <- readRDS("etymology.rds")
 top_languages <- readRDS("top_languages.rds")
 top_roots <- readRDS("top_roots.rds")
-words_relations <- readRDS("relations.rds")  # your words_relations dataset
+words_relations <- readRDS("relations.rds")
 
-# Extract unique languages from the Languages column in words_relations
-get_unique_langs <- function(rel_col) {
-  langs <- unique(unlist(strsplit(rel_col, " --> ")))
-  return(langs)
+
+strong_reltype_weights <- c(
+  "inherited from" = 2.0
+)
+
+normalize_reltype <- function(rt) {
+  rt <- gsub("_", " ", rt)
+  rt <- trimws(rt)
+  return(rt)
 }
 
-all_langs <- unique(unlist(strsplit(words_relations$Languages, " --> ")))
-all_langs <- sort(all_langs)
-
-# Helper: prettify relation type strings 
+# prettify relation type strings 
 pretty_reltype <- function(reltype) {
   reltype <- gsub("_", " ", reltype)
   if (reltype == "borrowed from") return("borrowed words from")
@@ -30,33 +34,23 @@ pretty_reltype <- function(reltype) {
   paste0(reltype, " words from")
 }
 
-# UI
 ui <- fluidPage(
-  titlePanel("🌐 The Global Journey of Words"),
-  
+  titlePanel("🌐 The Global Journey of Words with Clustering"),
   tabsetPanel(
-    id = "main_tabs",  # id added to keep track of active tab
-    
-    # First tab: Language Relatedness Network
+    id = "main_tabs",
     tabPanel("Language Relatedness Network",
              sidebarLayout(
                sidebarPanel(
-                 helpText("Interactive network showing shared related words among top 20 languages."),
-                 br(),
-                 helpText(
-                   strong("Network Legend:"),
-                   br(),
-                   "• Line thickness represents the number of shared words between two languages. Hover to see exact number.",
-                   br(),
-                   "• Node size indicates the total number of shared words the language has with all others (larger nodes mean greater overall connectivity)."
-                 )
+                 helpText("Network connectivity of languages by inheritance "),
+                 helpText("• Node size = total weighted connectivity of language."),
+                 helpText("• Edge width = weighted number of shared inherited words"),
+                 helpText("• Node color = cluster community detected by graph clustering algorithm.")
+                 # sliderInput removed here
                ),
                mainPanel(
-                 withSpinner(visNetworkOutput("language_network", height = "900px", width = "100%"))
+                 withSpinner(visNetworkOutput("language_network", height = "900px"))
                )
              )),
-    
-    # Second tab: English Words Inheritance
     tabPanel("English Words Inheritance",
              sidebarLayout(
                sidebarPanel(
@@ -67,16 +61,11 @@ ui <- fluidPage(
                  withSpinner(tableOutput("borrowed_words"))
                )
              )),
-    
-    # Third tab: Word Relations Translator
     tabPanel("Word Relations Translator",
              sidebarLayout(
                sidebarPanel(
-                 helpText("This is a vocabulary words translator. Select origin language and target language. Then type a word to see related word pairs."),
-                 
-                 selectInput("origin_lang", "Select Origin Language:", choices = all_langs, selected = all_langs[1]),
-                 selectInput("target_lang", "Select Target Language:", choices = all_langs, selected = all_langs[2]),
-                 
+                 selectInput("origin_lang", "Select Origin Language:", choices = unique(unlist(strsplit(words_relations$Languages, " --> "))), selected = NULL),
+                 selectInput("target_lang", "Select Target Language:", choices = unique(unlist(strsplit(words_relations$Languages, " --> "))), selected = NULL),
                  textInput("filter_word", "Type a word to filter:", "")
                ),
                mainPanel(
@@ -84,9 +73,6 @@ ui <- fluidPage(
                  withSpinner(tableOutput("filtered_pairs"))
                )
              )),
-    
-    
-    # Fourth tab: Languages and Their Influences
     tabPanel("Languages and Their Influences",
              sidebarLayout(
                sidebarPanel(
@@ -102,10 +88,77 @@ ui <- fluidPage(
   )
 )
 
-# Server
 server <- function(input, output, session) {
   
-  # First tab (English Words Inheritance)
+  output$language_network <- renderVisNetwork({
+    ety <- etymology %>%
+      mutate(reltype_norm = normalize_reltype(reltype)) %>%
+      filter(lang %in% top_languages, related_lang %in% top_languages) %>%
+      filter(!is.na(term)) %>%
+      filter(reltype_norm %in% names(strong_reltype_weights)) %>%
+      distinct(term, lang, related_lang, reltype_norm)
+    
+    ety$weight <- strong_reltype_weights[ety$reltype_norm]
+    
+    # Aggregate weighted shared words between language pairs (undirected)
+    edges_summary <- ety %>%
+      mutate(lang1 = pmin(lang, related_lang),
+             lang2 = pmax(lang, related_lang)) %>%
+      group_by(lang1, lang2) %>%
+      summarise(
+        weighted_score = sum(weight),
+        shared_words = n_distinct(term),
+        .groups = "drop"
+      ) %>%
+      filter(lang1 != lang2) 
+    
+    g <- graph_from_data_frame(edges_summary, directed = FALSE, vertices = data.frame(name = top_languages))
+    
+    if (ecount(g) == 0) {
+      # Empty graph fallback
+      nodes <- data.frame(id = top_languages, label = top_languages, color = "gray", value = 10)
+      edges <- data.frame(from = character(0), to = character(0))
+      
+      visNetwork(nodes, edges) %>%
+        visNodes(shape = "dot") %>%
+        visOptions(highlightNearest = TRUE, nodesIdSelection = TRUE)
+    } else {
+      clusters <- cluster_louvain(g, weights = E(g)$weighted_score)
+      membership <- membership(clusters)
+      node_degree <- strength(g, weights = E(g)$weighted_score)
+      nodes <- data.frame(
+        id = V(g)$name,
+        cluster = membership,
+        value = node_degree + 5,
+        label = V(g)$name,
+        stringsAsFactors = FALSE
+      )
+      
+      n_clusters <- length(unique(membership))
+      cluster_colors <- RColorBrewer::brewer.pal(min(n_clusters, 8), "Set2")
+      if (n_clusters > 8) {
+        cluster_colors <- colorRampPalette(cluster_colors)(n_clusters)
+      }
+      nodes$color <- cluster_colors[nodes$cluster]
+      
+      edges <- data.frame(
+        from = edges_summary$lang1,
+        to = edges_summary$lang2,
+        width = scales::rescale(edges_summary$weighted_score, to = c(1, 15)),
+        title = paste0(edges_summary$shared_words, " inherited words; ", round(edges_summary$weighted_score, 2)),
+        stringsAsFactors = FALSE
+      )
+      
+      visNetwork(nodes, edges) %>%
+        visNodes(shape = "dot", scaling = list(min = 10, max = 40)) %>%
+        visEdges(smooth = FALSE, color = list(color = "#97C2FC", highlight = "orange")) %>%
+        visOptions(highlightNearest = TRUE, nodesIdSelection = TRUE) %>%
+        visPhysics(stabilization = TRUE, solver = "forceAtlas2Based") %>%
+        visLayout(improvedLayout = TRUE)
+    }
+  })
+  
+  # English Words Inheritance tab
   inherited_langs <- reactive({
     etymology %>%
       filter(reltype == "inherited_from", lang == "English") %>%
@@ -132,17 +185,15 @@ server <- function(input, output, session) {
       select(Word = term, Definition = definition)
   })
   
-  # Second tab - Word Relations Translator
+  # Word Relations Translator tab
   output$filtered_pairs <- renderTable({
     req(input$origin_lang, input$target_lang)
     
-    # Filter by selected language pair (Languages column)
     lang_pair_str <- paste(input$origin_lang, "-->", input$target_lang)
     
     filtered <- words_relations %>%
       filter(Languages == lang_pair_str)
     
-    # If filter word is provided, filter Start or End columns (case insensitive)
     if (nchar(input$filter_word) > 0) {
       word_filter <- tolower(input$filter_word)
       filtered <- filtered %>%
@@ -152,58 +203,7 @@ server <- function(input, output, session) {
     filtered %>% select(Start, End, Languages)
   })
   
-  # Third tab (now first in UI) - Language Relatedness Network
-  output$language_network <- renderVisNetwork({
-    # Filter etymology to top languages only (both lang and related_lang)
-    ety <- etymology %>%
-      filter(lang %in% top_languages, related_lang %in% top_languages) %>%
-      distinct(term, lang, related_lang)
-    
-    # Count shared words between pairs of languages (undirected)
-    # Order lang and related_lang alphabetically to treat edges as undirected
-    edges_df <- ety %>%
-      mutate(lang1 = pmin(lang, related_lang),
-             lang2 = pmax(lang, related_lang)) %>%
-      group_by(lang1, lang2) %>%
-      summarise(shared_words = n_distinct(term), .groups = "drop") %>%
-      filter(lang1 != lang2)
-    
-    # Create nodes df with total shared words (weighted degree)
-    node_sizes <- edges_df %>%
-      pivot_longer(cols = c(lang1, lang2), names_to = "end", values_to = "lang") %>%
-      group_by(lang) %>%
-      summarise(total_shared = sum(shared_words)) %>%
-      ungroup()
-    
-    nodes <- data.frame(id = top_languages) %>%
-      left_join(node_sizes, by = c("id" = "lang")) %>%
-      mutate(total_shared = ifelse(is.na(total_shared), 0, total_shared),
-             label = id,
-             value = total_shared + 5) # +5 to avoid zero size
-    
-    edges <- data.frame(from = edges_df$lang1, to = edges_df$lang2,
-                        width = scales::rescale(edges_df$shared_words, to = c(1, 10)),
-                        title = paste0(edges_df$shared_words, " shared words"))
-    
-    visNetwork(nodes, edges) %>%
-      visNodes(shape = "dot", scaling = list(min = 10, max = 40)) %>%
-      visEdges(smooth = FALSE, color = list(color = "#97C2FC", highlight = "pink")) %>%
-      visOptions(highlightNearest = TRUE, nodesIdSelection = TRUE) %>%
-      visPhysics(
-        stabilization = TRUE,
-        solver = "forceAtlas2Based",
-        forceAtlas2Based = list(
-          gravitationalConstant = -50,
-          centralGravity = 0.01,
-          springLength = 150,
-          springConstant = 0.05,
-          damping = 0.4
-        )
-      ) %>%
-      visLayout(improvedLayout = TRUE)
-  })
-  
-  # Fourth tab - Languages and Their Influences
+  # Languages and Their Influences tab
   related_languages_by_relation <- reactive({
     req(input$focus_lang)
     
@@ -219,38 +219,22 @@ server <- function(input, output, session) {
     
     counts <- ety %>%
       group_by(reltype, other_lang) %>%
-      summarise(shared_words = n_distinct(term), .groups = "drop") %>%
-      arrange(reltype, desc(shared_words))
+      summarise(shared_words = n_distinct(term), .groups = "drop")
     
     counts
   })
   
   output$influence_plot <- renderPlot({
     req(input$focus_lang)
+    counts <- related_languages_by_relation()
     
-    ety <- etymology %>%
-      filter(!is.na(lang), !is.na(related_lang)) %>%
-      filter(lang == input$focus_lang | related_lang == input$focus_lang) %>%
-      distinct(term, lang, related_lang)
-    
-    ety <- ety %>%
-      mutate(other_lang = ifelse(lang == input$focus_lang, related_lang, lang)) %>%
-      filter(other_lang != input$focus_lang) %>%
-      filter(other_lang %in% top_languages)
-    
-    counts <- ety %>%
-      group_by(other_lang) %>%
-      summarise(shared_words = n_distinct(term), .groups = "drop") %>%
-      slice_max(order_by = shared_words, n = 20)
-    
-    ggplot(counts, aes(x = reorder(other_lang, shared_words), y = shared_words)) +
-      geom_col(fill = "purple") +
+    ggplot(counts, aes(x = reorder(other_lang, shared_words), y = shared_words, fill = reltype)) +
+      geom_bar(stat = "identity", position = position_stack(reverse = TRUE)) +
       coord_flip() +
-      labs(x = "Language", y = "Number of Shared Words", 
-           title = paste("Shared Words with", input$focus_lang)) +
+      labs(title = paste("Shared Words by Relation Type with", input$focus_lang),
+           x = "Related Language", y = "Number of Shared Words") +
       theme_minimal()
   })
-  
   output$relations_summary_ui <- renderUI({
     df <- related_languages_by_relation()
     req(nrow(df) > 0)
