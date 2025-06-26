@@ -124,10 +124,9 @@ ui <- fluidPage(
              sidebarLayout(
                sidebarPanel(
                  helpText("Top 10 Semantic Shifts - 
-This chart shows the words that have experienced the biggest changes in meaning over time.
-Each bar represents how much a word’s meaning has varied,
-with taller bars indicating greater shifts. These words may have acquired new senses,
-                          fallen out of use, or changed in cultural significance.")
+This chart shows the words that have experienced the most sudden changes in meaning over time.
+Each bar represents how aggresively a word’s meaning has varied in its lifetime,
+with taller bars indicating more erratic shifts. These words may have experienced dramatic changes at certain points in time.")
                ),  
                mainPanel(
                  withSpinner(plotOutput("top10_shift_plot"))
@@ -231,7 +230,11 @@ server <- function(input, output, session) {
       filter(reltype == "inherited_from", lang == "English", related_lang == input$source_lang) %>%
       distinct(term) %>%
       inner_join(dict, by = c("term" = "word")) %>%
+      group_by(term) %>%
+      slice(1) %>%  # take only the first definition
+      ungroup() %>%
       select(Word = term, Definition = definition)
+    
   })
   
   # Word Relations Translator tab
