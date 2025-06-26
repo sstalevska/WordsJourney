@@ -6,6 +6,8 @@ library(readr)
 words_relations <- read_csv("rstudio/Infoviz Proekt/archive/words_relations.csv")
 etymology <- read_csv("rstudio/Infoviz Proekt/archive/etymology.csv")
 dict <- read_csv("rstudio/Infoviz Proekt/archive/dict.csv")
+semantic_displacement <- read_csv("rstudio/Infoviz Proekt/archive/semantic_displacement.csv")
+
 
 # Normalize column names
 names(dict) <- tolower(names(dict))
@@ -15,6 +17,8 @@ names(etymology) <- tolower(names(etymology))
 saveRDS(dict, "dict.rds")
 saveRDS(etymology, "etymology.rds")
 saveRDS(words_relations, "relations.rds")
+saveRDS(semantic_displacement, "semantic_displacement.rds")
+
 
 # Get top 20 source languages (borrowed origins)
 top_languages <- etymology %>%

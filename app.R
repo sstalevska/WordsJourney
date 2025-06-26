@@ -7,6 +7,7 @@ library(igraph)
 library(ggplot2)
 library(tidyr)
 library(RColorBrewer)
+library(readr)
 
 # Load processed data 
 dict <- readRDS("dict.rds")
@@ -14,6 +15,8 @@ etymology <- readRDS("etymology.rds")
 top_languages <- readRDS("top_languages.rds")
 top_roots <- readRDS("top_roots.rds")
 words_relations <- readRDS("relations.rds")
+semantic_displacement <- readRDS("semantic_displacement.rds")
+
 
 
 strong_reltype_weights <- c(
@@ -34,8 +37,11 @@ pretty_reltype <- function(reltype) {
   paste0(reltype, " words from")
 }
 
+valid_words <- sort(unique(semantic_displacement$word))
+valid_words <- valid_words[grepl("^[a-zA-Z'-]+$", valid_words) & nchar(valid_words) > 1]
+
 ui <- fluidPage(
-  titlePanel("🌐 The Global Journey of Words with Clustering"),
+  titlePanel("🌐 Journey of Words and Languages"),
   tabsetPanel(
     id = "main_tabs",
     tabPanel("Language Relatedness Network",
@@ -45,7 +51,6 @@ ui <- fluidPage(
                  helpText("• Node size = total weighted connectivity of language."),
                  helpText("• Edge width = weighted number of shared inherited words"),
                  helpText("• Node color = cluster community detected by graph clustering algorithm.")
-                 # sliderInput removed here
                ),
                mainPanel(
                  withSpinner(visNetworkOutput("language_network", height = "900px"))
@@ -84,9 +89,53 @@ ui <- fluidPage(
                  hr(),
                  uiOutput("relations_summary_ui")
                )
+             )),
+    tabPanel("Semantic Displacement Over Time",
+             sidebarLayout(
+               sidebarPanel(
+                 selectInput("selected_word", "Select a Word:", choices = valid_words, selected = "gay"),
+                 helpText("This tab shows the semantic displacement over time for words compared to a baseline."),
+                 helpText("Plot Explanation:
+                          This plot shows how much the meaning of a selected word has changed over time,
+                          from the earliest year available to the latest.
+                          The y-axis represents how different the word’s meaning is compared to its original meaning
+                          — with 0 meaning no change and 1 meaning the maximum change observed for that word.
+                          A steady upward line means gradual change; sharp rises mean sudden shifts in meaning. 
+                          Big  shifts during certain decades — possible new slang uses, changes in common contexts, or different cultural meanings."),
+               ),
+               mainPanel(
+                 h4(textOutput("displacement_title")),
+                 p("Note: Semantic displacement (Meaning Shift) in terms of baseline meaning 0."),
+                 withSpinner(plotOutput("displacement_plot"))
+               )
+             )),
+    tabPanel("Semantic Displacement Ranked",
+             sidebarLayout(
+               sidebarPanel(
+                 selectInput("change_filter", "Filter by change level:",
+                             choices = c("Most stable" = "stable", "Most changed" = "changed", "All" = "all"),
+                             selected = "all")
+               ),
+               mainPanel(
+                 withSpinner(tableOutput("ranked_words_table"))
+               )
+             )),
+    tabPanel("Top 10 Semantic Shifts",
+             sidebarLayout(
+               sidebarPanel(
+                 helpText("Top 10 Semantic Shifts - 
+This chart shows the words that have experienced the biggest changes in meaning over time.
+Each bar represents how much a word’s meaning has varied,
+with taller bars indicating greater shifts. These words may have acquired new senses,
+                          fallen out of use, or changed in cultural significance.")
+               ),  
+               mainPanel(
+                 withSpinner(plotOutput("top10_shift_plot"))
+               )
              ))
   )
 )
+
 
 server <- function(input, output, session) {
   
@@ -271,6 +320,77 @@ server <- function(input, output, session) {
         }, colnames = FALSE, striped = TRUE, bordered = TRUE, spacing = "s")
       })
     }
+  })
+  # Semantic displacement plot
+  output$displacement_title <- renderText({
+    req(input$selected_word)
+    paste("Semantic Displacement of:", input$selected_word)
+  })
+  
+  output$displacement_plot <- renderPlot({
+    req(input$selected_word)
+    df <- semantic_displacement %>%
+      filter(word == input$selected_word)
+    
+    if (nrow(df) == 0) {
+      plot.new()
+      text(0.5, 0.5, "No data available for this word.", cex = 1.5)
+      return()
+    }
+    
+    ggplot(df, aes(x = decade, y = displacement)) +
+      geom_line(color = "pink", size = 1.5) +
+      geom_point(color = "pink", size = 2) +
+      labs(x = "Year", y = "Semantic Displacement", 
+           title = paste("Semantic Displacement over Time for", input$selected_word)) +
+      theme_minimal()
+  })
+  
+  # Ranked list with filtering
+  output$ranked_words_table <- renderTable({
+    filtered_data <- semantic_displacement %>%
+      group_by(word) %>%
+      filter(n() >= 3) %>%
+      ungroup() %>%
+      filter(!str_detect(word, "^[0-9]+$"))  # remove words that are only digits
+    
+    df_summary <- filtered_data %>%
+      group_by(word) %>%
+      summarise(var_displacement = var(displacement, na.rm = TRUE)) %>%
+      arrange(desc(var_displacement))
+    
+    filter_type <- input$change_filter
+    if (filter_type == "stable") {
+      df_summary <- df_summary %>% arrange(var_displacement) %>% head(50)
+    } else if (filter_type == "changed") {
+      df_summary <- df_summary %>% head(50)
+    }
+    
+    df_summary %>%
+      rename(`Word` = word, `Variance of Semantic Displacement` = var_displacement)
+  })
+  
+  
+  # Top 10 most shifted bar chart
+  output$top10_shift_plot <- renderPlot({
+    filtered_data <- semantic_displacement %>%
+      group_by(word) %>%
+      filter(n() >= 3) %>%  # filter out words with less than 3 records
+      ungroup()
+    
+    top10 <- filtered_data %>%
+      group_by(word) %>%
+      summarise(var_displacement = var(displacement, na.rm = TRUE)) %>%
+      arrange(desc(var_displacement)) %>%
+      head(10)
+    
+    ggplot(top10, aes(x = reorder(word, var_displacement), y = var_displacement)) +
+      geom_bar(stat = "identity", fill = "purple") +
+      coord_flip() +
+      labs(title = "Top 10 Words with Highest Variance in Semantic Displacement",
+           x = "Word",
+           y = "Variance of Semantic Displacement") +
+      theme_minimal()
   })
   
 }
