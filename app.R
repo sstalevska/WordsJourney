@@ -42,14 +42,13 @@ pretty_reltype <- function(reltype) {
 valid_words <- sort(unique(semantic_displacement$word))
 valid_words <- valid_words[grepl("^[a-zA-Z'-]+$", valid_words) & nchar(valid_words) > 1]
 
-# Create a smaller subset: e.g., top 500 English terms only
+# Create a smaller subset: e.g., top500 terms only
 small_etymology <- etymology %>%
-  filter(lang == "English") %>%
   slice_head(n = 500) %>%
   # Also include rows where term or related_term is in those 500 words to keep tree intact
   { 
-    english_terms <- .$term
-    etymology %>% filter(term %in% english_terms | related_term %in% english_terms)
+    terms <- .$term
+    etymology %>% filter(term %in% terms | related_term %in% terms)
   }
 
 
@@ -119,7 +118,7 @@ ui <- fluidPage(
     tabPanel("Semantic Displacement Over Time",
              sidebarLayout(
                sidebarPanel(
-                 selectizeInput("selected_words", "Select Words:", choices = valid_words, selected = "broadcast", multiple = TRUE),
+                 selectizeInput("selected_words", "Select Words:", choices = valid_words, selected = "gay", multiple = TRUE),
                  helpText("This tab shows the semantic displacement over time for words compared to a baseline."),
                  helpText("Plot Explanation:
                           This plot shows how much the meaning of a selected word has changed over time,
