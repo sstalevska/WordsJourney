@@ -10,6 +10,7 @@ library(tidyr)
 library(RColorBrewer)
 library(readr)
 library(plotly)
+library(shinyWidgets)
 
 # Load processed data 
 dict <- readRDS("dict.rds")
@@ -154,12 +155,12 @@ ui <- fluidPage(
                )
              )),
     
-    tabPanel("Top 10 Semantic Shifts",
+    tabPanel("Top 20 Semantic Shifts",
              fluidRow(
                column(
                  width = 3,
                  wellPanel(
-                   helpText("Top 10 Semantic Shifts - 
+                   helpText("Top 20 Semantic Shifts - 
 This chart shows the words that have experienced the most sudden changes in meaning over time."),
                    sliderInput("top10_year_range", "Select Year Range:",
                                min = min(semantic_displacement$decade, na.rm = TRUE),
@@ -208,9 +209,6 @@ This chart shows the words that have experienced the most sudden changes in mean
                )
              )
     )
-    
-    
-    
   )
 )
 
@@ -479,7 +477,7 @@ server <- function(input, output, session) {
     }
     
     p <- ggplot(df, aes(x = decade, y = displacement, color = word, group = word)) +
-      geom_line(size = 1.5) +
+      geom_line(size = 1.5)+
       geom_point(size = 2) +
       labs(x = "Year", y = "Semantic Displacement",
            title = "Semantic Displacement over Time") +
@@ -517,7 +515,7 @@ server <- function(input, output, session) {
   })
   
   
-  # Top 10 most shifted bar chart
+  # Top 20 most shifted bar chart
   output$top10_shift_plot <- renderPlotly({
     req(input$top10_year_range)
     
@@ -630,8 +628,7 @@ server <- function(input, output, session) {
   
   
   
-  # nisho ich
-  
+  # etimologija
   # Reactive subset of etymology data filtered to English & small set for performance
   filtered_etymology <- reactive({
     small_etymology
@@ -762,7 +759,6 @@ server <- function(input, output, session) {
       select(term, lang, related_term, related_lang, reltype, description = desc) %>%
       distinct()
   })
-  
   
 }
 
